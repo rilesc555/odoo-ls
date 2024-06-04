@@ -1,10 +1,12 @@
 use crate::core::config::{Config, ConfigRequest};
+use crate::utils::SortedWeakPtrSet;
 use std::collections::HashMap;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
+use weak_table::traits::WeakElement;
 
 use std::collections::HashSet;
 use weak_table::PtrWeakHashSet;
@@ -41,10 +43,10 @@ pub struct SyncOdoo {
     file_mgr: Rc<RefCell<FileMgr>>,
     pub modules: HashMap<String, Weak<RefCell<Symbol>>>,
     pub models: HashMap<String, Rc<RefCell<Model>>>,
-    rebuild_arch: PtrWeakHashSet<Weak<RefCell<Symbol>>>,
-    rebuild_arch_eval: PtrWeakHashSet<Weak<RefCell<Symbol>>>,
-    rebuild_odoo: PtrWeakHashSet<Weak<RefCell<Symbol>>>,
-    rebuild_validation: PtrWeakHashSet<Weak<RefCell<Symbol>>>,
+    rebuild_arch: SortedWeakPtrSet,
+    rebuild_arch_eval: SortedWeakPtrSet,
+    rebuild_odoo: SortedWeakPtrSet,
+    rebuild_validation: SortedWeakPtrSet,
     pub not_found_symbols: PtrWeakHashSet<Weak<RefCell<Symbol>>>,
     pub msg_sender: MsgHandler,
     pub load_odoo_addons: bool //indicate if we want to load odoo addons or not
@@ -69,10 +71,10 @@ impl SyncOdoo {
             stdlib_dir: env::current_dir().unwrap().parent().unwrap().join("server").join("typeshed").join("stdlib").to_str().unwrap().to_string(),
             modules: HashMap::new(),
             models: HashMap::new(),
-            rebuild_arch: PtrWeakHashSet::new(),
-            rebuild_arch_eval: PtrWeakHashSet::new(),
-            rebuild_odoo: PtrWeakHashSet::new(),
-            rebuild_validation: PtrWeakHashSet::new(),
+            rebuild_arch: SortedWeakPtrSet::new(),
+            rebuild_arch_eval: SortedWeakPtrSet::new(),
+            rebuild_odoo: SortedWeakPtrSet::new(),
+            rebuild_validation: SortedWeakPtrSet::new(),
             not_found_symbols: PtrWeakHashSet::new(),
             msg_sender,
             load_odoo_addons: true
@@ -266,63 +268,97 @@ impl SyncOdoo {
         //Part 1: Find the symbol with a unmutable set
         {
             let set =  if step == BuildSteps::ARCH_EVAL {
-                &self.rebuild_arch_eval
+                &mut self.rebuild_arch_eval
             } else if step == BuildSteps::ODOO {
-                &self.rebuild_odoo
+                &mut self.rebuild_odoo
             } else if step == BuildSteps::VALIDATION {
-                &self.rebuild_validation
+                &mut self.rebuild_validation
             } else {
-                &self.rebuild_arch
+                &mut self.rebuild_arch
             };
             let mut selected_sym: Option<Rc<RefCell<Symbol>>> = None;
             let mut selected_count: u32 = 999999999;
             let mut current_count: u32;
-            for sym in &*set {
-                current_count = 0;
-                let symbol = sym.borrow_mut();
-                for (index, dep_set) in symbol.get_all_dependencies(step).iter().enumerate() {
-                    if index == BuildSteps::ARCH as usize {
-                        for dep in dep_set.iter() {
-                            if self.rebuild_arch.contains(&dep) {
-                                current_count += 1;
-                            }
-                        }
-                    }
-                    if index == BuildSteps::ARCH_EVAL as usize {
-                        for dep in dep_set.iter() {
-                            if self.rebuild_arch_eval.contains(&dep) {
-                                current_count += 1;
-                            }
-                        }
-                    }
-                    if index == BuildSteps::ODOO as usize {
-                        for dep in dep_set.iter() {
-                            if self.rebuild_odoo.contains(&dep) {
-                                current_count += 1;
-                            }
-                        }
-                    }
-                    if index == BuildSteps::VALIDATION as usize {
-                        for dep in dep_set.iter() {
-                            if self.rebuild_validation.contains(&dep) {
-                                current_count += 1;
-                            }
-                        }
-                    }
-                }
-                if current_count < selected_count {
-                    selected_sym = Some(sym.clone());
-                    selected_count = current_count;
-                    if current_count == 0 {
-                        break;
-                    }
-                }
-            }
-            if selected_sym.is_some() {
-                arc_sym = selected_sym.map(|x| x.clone());
-            }
+            arc_sym = set.pop();
+            return arc_sym;
+        //     for sym in &*set.iter() {
+        //         current_count = 0;
+        //         let symbol = sym.borrow_mut();
+        //         if symbol.parent.is_some() && !symbol.parent.as_ref().unwrap().is_expired() {
+        //             let parent = symbol.parent.as_ref().unwrap().upgrade().unwrap();
+        //             match step {
+        //                 BuildSteps::ARCH => {
+        //                     if parent.borrow().arch_status != BuildStatus::DONE {
+        //                         current_count += 1;
+        //                     }
+        //                 },
+        //                 BuildSteps::ARCH_EVAL => {
+        //                     if parent.borrow().arch_status != BuildStatus::DONE || parent.borrow().arch_eval_status != BuildStatus::DONE {
+        //                         current_count += 1;
+        //                     }
+        //                 },
+        //                 BuildSteps::ODOO => {
+        //                     if parent.borrow().arch_status != BuildStatus::DONE || parent.borrow().arch_eval_status != BuildStatus::DONE ||
+        //                     parent.borrow().odoo_status != BuildStatus::DONE{
+        //                         current_count += 1;
+        //                     }
+        //                 },
+        //                 BuildSteps::VALIDATION => {
+        //                     if parent.borrow().arch_status != BuildStatus::DONE || parent.borrow().arch_eval_status != BuildStatus::DONE ||
+        //                     parent.borrow().odoo_status != BuildStatus::DONE || parent.borrow().validation_status != BuildStatus::DONE {
+        //                         current_count += 1;
+        //                     }
+        //                 },
+        //                 BuildSteps::SYNTAX => {
+        //                     if parent.borrow().arch_status != BuildStatus::DONE {
+        //                         current_count += 1;
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //         for (index, dep_set) in symbol.get_all_dependencies(step).iter().enumerate() {
+        //             if index == BuildSteps::ARCH as usize {
+        //                 for dep in dep_set.iter() {
+        //                     if self.rebuild_arch.contains(&dep) {
+        //                         current_count += 1;
+        //                     }
+        //                 }
+        //             }
+        //             if index == BuildSteps::ARCH_EVAL as usize {
+        //                 for dep in dep_set.iter() {
+        //                     if self.rebuild_arch_eval.contains(&dep) {
+        //                         current_count += 1;
+        //                     }
+        //                 }
+        //             }
+        //             if index == BuildSteps::ODOO as usize {
+        //                 for dep in dep_set.iter() {
+        //                     if self.rebuild_odoo.contains(&dep) {
+        //                         current_count += 1;
+        //                     }
+        //                 }
+        //             }
+        //             if index == BuildSteps::VALIDATION as usize {
+        //                 for dep in dep_set.iter() {
+        //                     if self.rebuild_validation.contains(&dep) {
+        //                         current_count += 1;
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //         if current_count < selected_count {
+        //             selected_sym = Some(sym.clone());
+        //             selected_count = current_count;
+        //             if current_count == 0 {
+        //                 break;
+        //             }
+        //         }
+        //     }
+        //     if selected_sym.is_some() {
+        //         arc_sym = selected_sym.map(|x| x.clone());
+        //     }
         }
-        {
+        /*{
             let set =  if step == BuildSteps::ARCH_EVAL {
                 &mut self.rebuild_arch_eval
             } else if step == BuildSteps::ODOO {
@@ -337,11 +373,11 @@ impl SyncOdoo {
                 return None;
             }
             let arc_sym_unwrapped = arc_sym.unwrap();
-            if !set.remove(&arc_sym_unwrapped) {
+            if set.remove(&arc_sym_unwrapped).is_none() {
                 panic!("Unable to remove selected symbol from rebuild set")
             }
             return Some(arc_sym_unwrapped);
-        }
+        }*/
     }
 
     fn process_rebuilds(&mut self) {
@@ -414,21 +450,25 @@ impl SyncOdoo {
 
     pub fn add_to_rebuild_arch(&mut self, symbol: Rc<RefCell<Symbol>>) {
         //println!("ADDED TO ARCH - {}", symbol.borrow().paths.first().unwrap());
+        symbol.borrow_mut().arch_status = BuildStatus::PENDING;
         self.rebuild_arch.insert(symbol);
     }
 
     pub fn add_to_rebuild_arch_eval(&mut self, symbol: Rc<RefCell<Symbol>>) {
         //println!("ADDED TO EVAL - {}", symbol.borrow().paths.first().unwrap());
+        symbol.borrow_mut().arch_eval_status = BuildStatus::PENDING;
         self.rebuild_arch_eval.insert(symbol);
     }
 
     pub fn add_to_init_odoo(&mut self, symbol: Rc<RefCell<Symbol>>) {
         //println!("ADDED TO ODOO - {}", symbol.borrow().paths.first().unwrap());
+        symbol.borrow_mut().odoo_status = BuildStatus::PENDING;
         self.rebuild_odoo.insert(symbol);
     }
 
     pub fn add_to_validations(&mut self, symbol: Rc<RefCell<Symbol>>) {
         //println!("ADDED TO VALIDATION - {}", symbol.borrow().paths.first().unwrap());
+        symbol.borrow_mut().validation_status = BuildStatus::PENDING;
         self.rebuild_validation.insert(symbol);
     }
 
